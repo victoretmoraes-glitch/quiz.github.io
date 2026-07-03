@@ -81,6 +81,32 @@ async function handleRoute(request, { params }) {
       return handleCORS(NextResponse.json(cleanedStatusChecks))
     }
 
+    // ---------------------------------------------------------------- //
+    //                       QUIZ CONFIG ENDPOINTS                      //
+    // ---------------------------------------------------------------- //
+
+    // GET /api/quiz-config -> returns the active quiz config (or null)
+    if (route === '/quiz-config' && method === 'GET') {
+      const doc = await db.collection('quiz_configs').findOne({ id: 'active' })
+      if (!doc) return handleCORS(NextResponse.json({ config: null }))
+      const { _id, ...rest } = doc
+      return handleCORS(NextResponse.json({ config: rest.config }))
+    }
+
+    // PUT /api/quiz-config -> upsert the active quiz config
+    if (route === '/quiz-config' && method === 'PUT') {
+      const body = await request.json()
+      if (!body?.config || typeof body.config !== 'object') {
+        return handleCORS(NextResponse.json({ error: 'config is required' }, { status: 400 }))
+      }
+      await db.collection('quiz_configs').updateOne(
+        { id: 'active' },
+        { $set: { id: 'active', config: body.config, updatedAt: new Date() } },
+        { upsert: true }
+      )
+      return handleCORS(NextResponse.json({ ok: true }))
+    }
+
     // Route not found
     return handleCORS(NextResponse.json(
       { error: `Route ${route} not found` }, 

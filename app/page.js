@@ -51,7 +51,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 
-import quizConfig from "@/lib/quiz/quizConfig.json";
+import quizConfigDefault from "@/lib/quiz/quizConfig.json";
 import { useQuizStore } from "@/lib/quiz/store";
 import {
   interpolate,
@@ -619,7 +619,23 @@ function CheckoutRedirectStep({ step, scope }) {
 /* ================================================================== */
 
 function App() {
-  const config = quizConfig;
+  const [config, setConfig] = useState(null);
+
+  // Load config from API (fallback to bundled default)
+  useEffect(() => {
+    let ignore = false;
+    fetch("/api/quiz-config")
+      .then((r) => r.json())
+      .then((data) => {
+        if (ignore) return;
+        setConfig(data?.config || quizConfigDefault);
+      })
+      .catch(() => setConfig(quizConfigDefault));
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
   const {
     currentStepId,
     init,
@@ -635,6 +651,7 @@ function App() {
 
   // 1) Init on mount — capture URL params, set startStepId
   useEffect(() => {
+    if (!config) return;
     if (initedRef.current) return;
     initedRef.current = true;
     const params = new URLSearchParams(window.location.search);
@@ -643,13 +660,13 @@ function App() {
 
   const stepsById = useMemo(() => {
     const map = {};
-    config.steps.forEach((s) => (map[s.id] = s));
+    (config?.steps || []).forEach((s) => (map[s.id] = s));
     return map;
   }, [config]);
 
   const currentStep = currentStepId ? stepsById[currentStepId] : null;
-  const currentIndex = currentStep ? config.steps.findIndex((s) => s.id === currentStep.id) : 0;
-  const totalSteps = config.steps.length;
+  const currentIndex = currentStep ? (config?.steps || []).findIndex((s) => s.id === currentStep.id) : 0;
+  const totalSteps = (config?.steps || []).length;
   const scope = { ...variables, tracking };
 
   // 2) Run onEnter actions when step changes
@@ -694,7 +711,7 @@ function App() {
     goToStep(nextId, totalSteps);
   };
 
-  if (!currentStep) {
+  if (!config || !currentStep) {
     return (
       <div className="min-h-screen grid place-items-center">
         <Icons.Loader2 className="h-8 w-8 animate-spin text-primary" />
