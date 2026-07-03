@@ -17,6 +17,8 @@ import {
   Code2,
   Eye,
   Variable,
+  GripVertical,
+  FilePlus,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -739,25 +741,46 @@ function MetaTab({ config, onChange }) {
 /* ================================================================= */
 
 function AdminApp() {
+  const [quizzes, setQuizzes] = useState([]);
+  const [activeQuizId, setActiveQuizId] = useState(null);
   const [config, setConfig] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
+  const [dragId, setDragId] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
 
-  // Load from API
+  // 1) Load list of quizzes on mount. If empty, seed one from the bundled default.
   useEffect(() => {
-    fetch("/api/quiz-config")
+    (async () => {
+      const list = await fetch("/api/quizzes").then((r) => r.json()).catch(() => ({ quizzes: [] }));
+      let quizList = list?.quizzes || [];
+      if (quizList.length === 0) {
+        // seed with default
+        const seed = JSON.parse(JSON.stringify(quizConfigDefault));
+        const created = await fetch("/api/quizzes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: seed.meta?.name || "Quiz padrão", config: seed }),
+        }).then((r) => r.json());
+        quizList = [{ id: created.id, name: seed.meta?.name || "Quiz padrão" }];
+      }
+      setQuizzes(quizList);
+      setActiveQuizId(quizList[0].id);
+    })();
+  }, []);
+
+  // 2) Load specific quiz when activeQuizId changes
+  useEffect(() => {
+    if (!activeQuizId) return;
+    fetch(`/api/quizzes/${activeQuizId}`)
       .then((r) => r.json())
       .then((data) => {
         const cfg = data?.config || quizConfigDefault;
         setConfig(cfg);
         setSelectedId(cfg.steps?.[0]?.id || null);
-      })
-      .catch(() => {
-        setConfig(quizConfigDefault);
-        setSelectedId(quizConfigDefault.steps?.[0]?.id || null);
       });
-  }, []);
+  }, [activeQuizId]);
 
   const selectedStep = useMemo(
     () => (config?.steps || []).find((s) => s.id === selectedId) || null,
@@ -804,15 +827,82 @@ function AdminApp() {
     setConfig({ ...config, steps: next });
   };
 
+  // Drag & drop reorder
+  const onDragStart = (id) => setDragId(id);
+  const onDragEnd = () => {
+    setDragId(null);
+    setDragOverId(null);
+  };
+  const onDragOverStep = (e, id) => {
+    e.preventDefault();
+    if (id !== dragOverId) setDragOverId(id);
+  };
+  const onDropStep = (e, targetId) => {
+    e.preventDefault();
+    if (!dragId || dragId === targetId) {
+      onDragEnd();
+      return;
+    }
+    const list = [...config.steps];
+    const fromIdx = list.findIndex((s) => s.id === dragId);
+    const toIdx = list.findIndex((s) => s.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = list.splice(fromIdx, 1);
+    list.splice(toIdx, 0, moved);
+    setConfig({ ...config, steps: list });
+    onDragEnd();
+  };
+
+  // Multi-quiz actions
+  const createNewQuiz = async () => {
+    const name = prompt("Nome do novo quiz:", "Novo quiz");
+    if (!name) return;
+    const res = await fetch("/api/quizzes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }).then((r) => r.json());
+    const list = await fetch("/api/quizzes").then((r) => r.json());
+    setQuizzes(list.quizzes || []);
+    setActiveQuizId(res.id);
+    toast.success(`Quiz "${name}" criado`);
+  };
+
+  const deleteCurrentQuiz = async () => {
+    if (!activeQuizId) return;
+    if (quizzes.length <= 1) {
+      toast.error("Não é possível excluir o único quiz. Crie outro primeiro.");
+      return;
+    }
+    if (!confirm("Excluir permanentemente este quiz?")) return;
+    await fetch(`/api/quizzes/${activeQuizId}`, { method: "DELETE" });
+    const list = await fetch("/api/quizzes").then((r) => r.json());
+    setQuizzes(list.quizzes || []);
+    setActiveQuizId(list.quizzes?.[0]?.id || null);
+    toast.success("Quiz excluído");
+  };
+
   const save = async () => {
+    if (!activeQuizId) return;
     setSaving(true);
     try {
-      const r = await fetch("/api/quiz-config", {
+      const r = await fetch(`/api/quizzes/${activeQuizId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config }),
+        body: JSON.stringify({ config, name: config.meta?.name }),
       });
       if (!r.ok) throw new Error("Falha ao salvar");
+      // Also update legacy /api/quiz-config so `/` (root) reflects the first quiz if this is the default
+      if (quizzes[0]?.id === activeQuizId) {
+        await fetch("/api/quiz-config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config }),
+        });
+      }
+      // refresh quizzes list (in case name changed)
+      const list = await fetch("/api/quizzes").then((r) => r.json());
+      setQuizzes(list.quizzes || []);
       toast.success("Quiz salvo com sucesso!");
       setPreviewKey((k) => k + 1);
     } catch (e) {
@@ -841,15 +931,39 @@ function AdminApp() {
     <main className="min-h-screen w-full">
       {/* Top bar */}
       <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur">
-        <div className="container mx-auto px-4 py-3 flex items-center gap-3">
+        <div className="container mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
           <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-primary to-purple-600 grid place-items-center">
             <Settings className="h-4 w-4 text-white" />
           </div>
           <h1 className="font-bold">Editor de Quiz</h1>
-          <Badge variant="outline" className="ml-2">{config.steps?.length || 0} steps</Badge>
+
+          {/* Quiz selector */}
+          <div className="flex items-center gap-2 ml-2">
+            <Select value={activeQuizId || ""} onValueChange={(v) => setActiveQuizId(v)}>
+              <SelectTrigger className="w-[240px] h-9">
+                <SelectValue placeholder="Selecione um quiz" />
+              </SelectTrigger>
+              <SelectContent>
+                {quizzes.map((q) => (
+                  <SelectItem key={q.id} value={q.id}>
+                    {q.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="sm" onClick={createNewQuiz}>
+              <FilePlus className="h-4 w-4 mr-1" /> Novo quiz
+            </Button>
+            <Button variant="outline" size="sm" onClick={deleteCurrentQuiz} disabled={quizzes.length <= 1}>
+              <Trash2 className="h-4 w-4 mr-1 text-destructive" />
+            </Button>
+          </div>
+
+          <Badge variant="outline" className="ml-1">{config.steps?.length || 0} steps</Badge>
+
           <div className="ml-auto flex gap-2">
             <Button variant="outline" size="sm" asChild>
-              <Link href="/" target="_blank">
+              <Link href={activeQuizId ? `/q/${activeQuizId}` : "/"} target="_blank">
                 <ExternalLink className="h-4 w-4 mr-1" /> Abrir quiz
               </Link>
             </Button>
@@ -885,12 +999,20 @@ function AdminApp() {
                       {config.steps.map((s, i) => (
                         <div
                           key={s.id}
+                          draggable
+                          onDragStart={() => onDragStart(s.id)}
+                          onDragEnd={onDragEnd}
+                          onDragOver={(e) => onDragOverStep(e, s.id)}
+                          onDrop={(e) => onDropStep(e, s.id)}
                           className={`group rounded-lg border p-2 cursor-pointer transition ${
                             selectedId === s.id ? "border-primary bg-primary/10" : "hover:border-primary/50"
+                          } ${dragId === s.id ? "opacity-40" : ""} ${
+                            dragOverId === s.id && dragId !== s.id ? "border-primary border-dashed bg-primary/5" : ""
                           }`}
                           onClick={() => setSelectedId(s.id)}
                         >
                           <div className="flex items-center gap-2">
+                            <GripVertical className="h-3 w-3 text-muted-foreground cursor-grab active:cursor-grabbing" />
                             <Badge variant="outline" className="text-[10px]">{i + 1}</Badge>
                             <div className="text-sm font-medium truncate flex-1">{s.title || s.id}</div>
                           </div>
@@ -965,7 +1087,7 @@ function AdminApp() {
                 <div className="rounded-lg border overflow-hidden bg-background" style={{ height: "80vh" }}>
                   <iframe
                     key={previewKey}
-                    src="/?utm_source=preview&utm_medium=admin"
+                    src={activeQuizId ? `/q/${activeQuizId}?utm_source=preview&utm_medium=admin` : "/?utm_source=preview&utm_medium=admin"}
                     className="w-full h-full"
                     title="Quiz preview"
                   />

@@ -85,15 +85,18 @@ async function handleRoute(request, { params }) {
     //                       QUIZ CONFIG ENDPOINTS                      //
     // ---------------------------------------------------------------- //
 
-    // GET /api/quiz-config -> returns the active quiz config (or null)
+    // GET /api/quiz-config -> returns the active (default) quiz config
     if (route === '/quiz-config' && method === 'GET') {
-      const doc = await db.collection('quiz_configs').findOne({ id: 'active' })
+      // First try singleton (legacy), then fallback to first quiz in list
+      let doc = await db.collection('quiz_configs').findOne({ id: 'active' })
+      if (!doc) {
+        doc = await db.collection('quizzes').findOne({}, { sort: { createdAt: 1 } })
+      }
       if (!doc) return handleCORS(NextResponse.json({ config: null }))
-      const { _id, ...rest } = doc
-      return handleCORS(NextResponse.json({ config: rest.config }))
+      return handleCORS(NextResponse.json({ config: doc.config }))
     }
 
-    // PUT /api/quiz-config -> upsert the active quiz config
+    // PUT /api/quiz-config -> upsert the active quiz config (legacy)
     if (route === '/quiz-config' && method === 'PUT') {
       const body = await request.json()
       if (!body?.config || typeof body.config !== 'object') {
@@ -104,6 +107,76 @@ async function handleRoute(request, { params }) {
         { $set: { id: 'active', config: body.config, updatedAt: new Date() } },
         { upsert: true }
       )
+      return handleCORS(NextResponse.json({ ok: true }))
+    }
+
+    // GET /api/quizzes -> list all quizzes (id, name, updatedAt)
+    if (route === '/quizzes' && method === 'GET') {
+      const docs = await db.collection('quizzes')
+        .find({}, { projection: { _id: 0, id: 1, name: 1, updatedAt: 1, createdAt: 1 } })
+        .sort({ createdAt: 1 })
+        .toArray()
+      return handleCORS(NextResponse.json({ quizzes: docs }))
+    }
+
+    // POST /api/quizzes -> create a new quiz
+    if (route === '/quizzes' && method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const id = body?.id || uuidv4()
+      const config = body?.config || {
+        meta: { id, name: body?.name || 'Novo quiz', locale: 'pt-BR', version: '1.0.0' },
+        theme: { primaryColor: '#7C3AED', secondaryColor: '#F59E0B', backgroundColor: '#0B1020', textColor: '#F8FAFC' },
+        tracking: { captureParams: ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'src'], persist: true },
+        variables: [],
+        startStepId: '',
+        steps: [],
+      }
+      const now = new Date()
+      await db.collection('quizzes').insertOne({
+        id,
+        name: body?.name || config?.meta?.name || 'Novo quiz',
+        config,
+        createdAt: now,
+        updatedAt: now,
+      })
+      return handleCORS(NextResponse.json({ id, config }))
+    }
+
+    // GET /api/quizzes/:id -> get one
+    if (route.startsWith('/quizzes/') && method === 'GET') {
+      const id = route.split('/')[2]
+      const doc = await db.collection('quizzes').findOne({ id })
+      if (!doc) return handleCORS(NextResponse.json({ error: 'not found' }, { status: 404 }))
+      return handleCORS(NextResponse.json({ id: doc.id, name: doc.name, config: doc.config }))
+    }
+
+    // PUT /api/quizzes/:id -> upsert
+    if (route.startsWith('/quizzes/') && method === 'PUT') {
+      const id = route.split('/')[2]
+      const body = await request.json()
+      if (!body?.config) {
+        return handleCORS(NextResponse.json({ error: 'config required' }, { status: 400 }))
+      }
+      await db.collection('quizzes').updateOne(
+        { id },
+        {
+          $set: {
+            id,
+            name: body.name || body.config?.meta?.name || 'Quiz',
+            config: body.config,
+            updatedAt: new Date(),
+          },
+          $setOnInsert: { createdAt: new Date() },
+        },
+        { upsert: true }
+      )
+      return handleCORS(NextResponse.json({ ok: true, id }))
+    }
+
+    // DELETE /api/quizzes/:id
+    if (route.startsWith('/quizzes/') && method === 'DELETE') {
+      const id = route.split('/')[2]
+      await db.collection('quizzes').deleteOne({ id })
       return handleCORS(NextResponse.json({ ok: true }))
     }
 
