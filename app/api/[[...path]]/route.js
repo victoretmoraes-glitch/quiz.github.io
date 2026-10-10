@@ -1,6 +1,7 @@
 import { MongoClient } from 'mongodb'
 import { v4 as uuidv4 } from 'uuid'
 import { NextResponse } from 'next/server'
+import { webSearch, SearchError } from '@/lib/search/perplexity'
 
 // MongoDB connection
 let client
@@ -36,6 +37,22 @@ async function handleRoute(request, { params }) {
   const method = request.method
 
   try {
+    // Web search - POST /api/search (Perplexity Search API; no database needed)
+    if (route === '/search' && method === 'POST') {
+      const body = await request.json().catch(() => null)
+      if (!body || typeof body !== 'object') {
+        return handleCORS(NextResponse.json({ error: 'JSON body is required' }, { status: 400 }))
+      }
+      try {
+        return handleCORS(NextResponse.json(await webSearch(body)))
+      } catch (error) {
+        if (!(error instanceof SearchError)) throw error
+        const response = NextResponse.json({ error: error.message }, { status: error.status })
+        if (error.retryAfter) response.headers.set('Retry-After', error.retryAfter)
+        return handleCORS(response)
+      }
+    }
+
     const db = await connectToMongo()
 
     // Root endpoint - GET /api/root (since /api/ is not accessible with catch-all)
